@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Devices.Models;
 
 namespace Devices.Services;
@@ -40,9 +41,21 @@ public class DeviceService : IDeviceService
         }
     }
 
-    public async Task<Device> AddDeviceAsync(JsonElement json)
+    public async Task<Device> AddDeviceAsync(DeviceCreateDto dto)
     {
-        var device = ParseDevice(json);
+        Regex ipRegex = new Regex(@"^((25[0-5]|2[0-4][0-9]|1\d{2}|[1-9]?\d)\.){3}(25[0-5]|2[0-4][0-9]|1\d{2}|[1-9]?\d)$");
+        if (dto.DeviceType == "Embedded"  && !ipRegex.IsMatch(dto.IpAddress!))
+            throw new ArgumentException("Ip address is not in a valid format");    Device device = dto.DeviceType switch
+        {
+            "PersonalComputer" => new PersonalComputer(
+                dto.Id, dto.Name, dto.IsEnabled, dto.OperatingSystem),
+            "Smartwatch" => new Smartwatch(
+                dto.Id, dto.Name, dto.IsEnabled, dto.BatteryLevel ?? 0),
+            "Embedded" => new Embedded(
+                dto.Id, dto.Name, dto.IsEnabled, dto.IpAddress!, dto.NetworkName!),
+            _ => throw new ArgumentException($"Unknown device type: {dto.DeviceType}")
+        };
+
         await _deviceRepository.AddDeviceAsync(device);
         return device;
     }
@@ -52,9 +65,9 @@ public class DeviceService : IDeviceService
         await _deviceRepository.RemoveDeviceByIdAsync(id);
     }
 
-    public async Task<Device> EditDeviceAsync(JsonElement json)
+    public async Task<Device> EditDeviceAsync(DeviceCreateDto dto)
     {
-        var device = ParseDevice(json);
+        var device = await AddDeviceAsync(dto);
         await _deviceRepository.EditDeviceAsync(device);
         return device;
     }

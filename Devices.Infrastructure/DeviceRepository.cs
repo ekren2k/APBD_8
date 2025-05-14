@@ -2,22 +2,27 @@ using System.Data;
 using System.Data.Common;
 using Devices.Models;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
+
 
 namespace Devices.Infrastructure
 {
     public class DeviceRepository : IDeviceRepository
     {
         private readonly string _connectionString;
+        private readonly ILogger<DeviceRepository> _logger;
 
-        public DeviceRepository(string connectionString)
+        public DeviceRepository(string connectionString, ILogger<DeviceRepository> logger)
         {
             _connectionString = connectionString;
+            _logger = logger;
         }
 
         public async Task AddDeviceAsync(Device device)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
+            _logger.LogDebug("Adding new device");
     
             using var transaction = (SqlTransaction) await connection.BeginTransactionAsync();
             try
@@ -47,8 +52,9 @@ namespace Devices.Infrastructure
 
                 await transaction.CommitAsync();
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogError("Failed to add device");
                 await transaction.RollbackAsync();
                 throw;
             }
@@ -211,11 +217,12 @@ namespace Devices.Infrastructure
                 {
                     var cmd = new SqlCommand(@"
                         UPDATE PersonalComputer 
-                        SET OperationSystem = @OperatingSystem 
+                        SET OperationSystem = @OperationSystem 
                         WHERE DeviceId = @DeviceId", connection, transaction);
-                    cmd.Parameters.AddWithValue("@OperatingSystem", pc.OperatingSystem ?? (object) DBNull.Value);
+                    cmd.Parameters.AddWithValue("@OperationSystem", pc.OperatingSystem ?? (object) DBNull.Value);
                     cmd.Parameters.AddWithValue("@DeviceId", device.Id);
-                    await cmd.ExecuteNonQueryAsync();
+                    var rowsAffected = await cmd.ExecuteNonQueryAsync();
+                    _logger.LogDebug("Stored procedure affected {RowsAffected} rows", rowsAffected);
                 }
                 else if (device is Smartwatch sw)
                 {
@@ -240,6 +247,12 @@ namespace Devices.Infrastructure
                 }
 
                 await transaction.CommitAsync();
+                
+                var getVersionCmd = new SqlCommand(
+                    "SELECT RowVersion FROM Device WHERE Id = @Id", 
+                    connection);
+                getVersionCmd.Parameters.AddWithValue("@Id", device.Id);
+                device.RowVersion = (byte[])await getVersionCmd.ExecuteScalarAsync();
             }
             catch
             {
@@ -293,8 +306,10 @@ namespace Devices.Infrastructure
             command.Parameters.AddWithValue("@Name", pc.Name);
             command.Parameters.AddWithValue("@IsEnabled", pc.IsEnabled);
             command.Parameters.AddWithValue("@OperationSystem", pc.OperatingSystem ?? (object)DBNull.Value);
-
-            await command.ExecuteNonQueryAsync();
+            
+            
+            var rowsAffected = await command.ExecuteNonQueryAsync();
+            _logger.LogDebug("AddEmbedded affected {Rows} rows", rowsAffected);
         }
         
     }

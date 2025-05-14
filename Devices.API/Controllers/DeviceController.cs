@@ -33,11 +33,17 @@ namespace Devices.Api.Controllers
         }
 
         [HttpPost]
-        public async Task<ActionResult> AddDevice([FromBody] JsonElement json)
+        public async Task<ActionResult<DeviceResponseDto>> AddDevice([FromBody] DeviceCreateDto dto)
         {
             try
             {
-                var device = await _deviceService.AddDeviceAsync(json);
+                if (dto.DeviceType == null)
+                    return BadRequest("DeviceType is required for creation");
+
+                if (!ModelState.IsValid)
+                    return BadRequest(ModelState);
+                
+                var device = await _deviceService.AddDeviceAsync(dto);
                 return CreatedAtAction(nameof(GetDeviceById), new { id = device.Id }, device);
             }
             catch (ArgumentException ex)
@@ -51,12 +57,18 @@ namespace Devices.Api.Controllers
         }
 
         [HttpPut("{id}")]
-        public async Task<ActionResult> EditDevice(string id, [FromBody] JsonElement json)
+        public async Task<ActionResult> EditDevice(string id, [FromBody] DeviceCreateDto dto)
         {
-            var device = await _deviceService.EditDeviceAsync(json);
+            if (id != dto.Id)
+                return BadRequest("ID in route does not match body");
+
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+            
+            var device = await _deviceService.EditDeviceAsync(dto);
             if (id != device.Id)
                 return BadRequest();
-            return NoContent();
+            return Ok();
         }
 
         [HttpDelete("{id}")]
