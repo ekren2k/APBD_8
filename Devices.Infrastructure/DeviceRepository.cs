@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using Devices.Models;
 using Microsoft.Data.SqlClient;
 
@@ -16,38 +18,39 @@ namespace Devices.Infrastructure
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
-
-            var deviceCommand = new SqlCommand("INSERT INTO Device (Id, Name, IsEnabled) VALUES (@Id, @Name, @IsEnabled)", connection);
-            deviceCommand.Parameters.AddWithValue("@Id", device.Id);
-            deviceCommand.Parameters.AddWithValue("@Name", device.Name);
-            deviceCommand.Parameters.AddWithValue("@IsEnabled", device.IsEnabled);
-
-            await deviceCommand.ExecuteNonQueryAsync();
-
-            if (device is PersonalComputer pc)
+    
+            using var transaction = (SqlTransaction) await connection.BeginTransactionAsync();
+            try
             {
-                var pcCommand = new SqlCommand("INSERT INTO PersonalComputer (OperationSystem, DeviceId) VALUES (@OperatingSystem, @DeviceId)", connection);
-                pcCommand.Parameters.AddWithValue("@OperatingSystem", pc.OperatingSystem ?? (object) DBNull.Value);
-                pcCommand.Parameters.AddWithValue("@DeviceId", device.Id);
+                if (device is Embedded embedded)
+                {
+                    await AddEmbeddedDeviceAsync(connection, transaction, embedded);
+                }
+                else if (device is PersonalComputer pc)
+                {
+                    await AddPersonalComputerAsync(connection, transaction, pc);
+                }
+                else if (device is Smartwatch sw)
+                {
+                    await AddSmartwatchAsync(connection, transaction, sw);
+                }
+                else
+                {
+                    throw new ArgumentException("Invalid device type");
+                }
+                
+                var getVersionCmd = new SqlCommand(
+                    "SELECT RowVersion FROM Device WHERE Id = @Id", 
+                    connection, transaction);
+                getVersionCmd.Parameters.AddWithValue("@Id", device.Id);
+                device.RowVersion = (byte[])await getVersionCmd.ExecuteScalarAsync();
 
-                await pcCommand.ExecuteNonQueryAsync();
+                await transaction.CommitAsync();
             }
-            else if (device is Smartwatch sw)
+            catch
             {
-                var smartwatchCommand = new SqlCommand("INSERT INTO Smartwatch (BatteryPercentage, DeviceId) VALUES (@BatteryPercentage, @DeviceId)", connection);
-                smartwatchCommand.Parameters.AddWithValue("@BatteryPercentage", sw.BatteryLevel);
-                smartwatchCommand.Parameters.AddWithValue("@DeviceId", device.Id);
-
-                await smartwatchCommand.ExecuteNonQueryAsync();
-            }
-            else if (device is Embedded embedded)
-            {
-                var embeddedCommand = new SqlCommand("INSERT INTO Embedded (IpAddress, NetworkName, DeviceId) VALUES (@IpAddress, @NetworkName, @DeviceId)", connection);
-                embeddedCommand.Parameters.AddWithValue("@IpAddress", embedded.IpAddress);
-                embeddedCommand.Parameters.AddWithValue("@NetworkName", embedded.NetworkName);
-                embeddedCommand.Parameters.AddWithValue("@DeviceId", device.Id);
-
-                await embeddedCommand.ExecuteNonQueryAsync();
+                await transaction.RollbackAsync();
+                throw;
             }
         }
 
@@ -125,7 +128,7 @@ namespace Devices.Infrastructure
         LEFT JOIN Smartwatch sw ON d.Id = sw.DeviceId
         LEFT JOIN Embedded e ON d.Id = e.DeviceId
         WHERE d.Id = @Id", connection);
-    
+
             command.Parameters.AddWithValue("@Id", id);
 
             var reader = await command.ExecuteReaderAsync();
@@ -139,11 +142,13 @@ namespace Devices.Infrastructure
                 return new PersonalComputer(id, name, isEnabled,
                     reader.GetString(reader.GetOrdinal("OperationSystem")));
             }
+
             if (!reader.IsDBNull(reader.GetOrdinal("BatteryPercentage")))
             {
                 return new Smartwatch(id, name, isEnabled,
                     reader.GetInt32(reader.GetOrdinal("BatteryPercentage")));
             }
+
             if (!reader.IsDBNull(reader.GetOrdinal("IpAddress")))
             {
                 return new Embedded(id, name, isEnabled,
@@ -158,69 +163,140 @@ namespace Devices.Infrastructure
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
-            
-            var deleteEmbedded = new SqlCommand("DELETE FROM Embedded WHERE DeviceId = @Id", connection);
+            using SqlTransaction transaction = connection.BeginTransaction();
+
+            var deleteEmbedded = new SqlCommand("DELETE FROM Embedded WHERE DeviceId = @Id", connection, transaction);
             deleteEmbedded.Parameters.AddWithValue("@Id", id);
             await deleteEmbedded.ExecuteNonQueryAsync();
 
-            var deletePc = new SqlCommand("DELETE FROM PersonalComputer WHERE DeviceId = @Id", connection);
+            var deletePc = new SqlCommand("DELETE FROM PersonalComputer WHERE DeviceId = @Id", connection, transaction);
             deletePc.Parameters.AddWithValue("@Id", id);
             await deletePc.ExecuteNonQueryAsync();
 
-            var deleteSw = new SqlCommand("DELETE FROM Smartwatch WHERE DeviceId = @Id", connection);
+            var deleteSw = new SqlCommand("DELETE FROM Smartwatch WHERE DeviceId = @Id", connection, transaction);
             deleteSw.Parameters.AddWithValue("@Id", id);
             await deleteSw.ExecuteNonQueryAsync();
 
-            var deleteDevice = new SqlCommand("DELETE FROM Device WHERE Id = @Id", connection);
+            var deleteDevice = new SqlCommand("DELETE FROM Device WHERE Id = @Id", connection, transaction);
             deleteDevice.Parameters.AddWithValue("@Id", id);
             await deleteDevice.ExecuteNonQueryAsync();
+            
+            transaction.Commit();
         }
 
-public async Task EditDeviceAsync(Device device)
-{
-    using var connection = new SqlConnection(_connectionString);
-    await connection.OpenAsync();
-
-    var transaction = connection.BeginTransaction();
-
-    try
-    {
-        var command = new SqlCommand("UPDATE Device SET Name = @Name, IsEnabled = @IsEnabled WHERE Id = @Id", connection, transaction);
-        command.Parameters.AddWithValue("@Id", device.Id);
-        command.Parameters.AddWithValue("@Name", device.Name);
-        command.Parameters.AddWithValue("@IsEnabled", device.IsEnabled);
-        await command.ExecuteNonQueryAsync();
-
-        if (device is PersonalComputer pc)
+        public async Task EditDeviceAsync(Device device)
         {
-            var cmd = new SqlCommand("UPDATE PersonalComputer SET OperationSystem = @OperatingSystem WHERE DeviceId = @DeviceId", connection, transaction);
-            cmd.Parameters.AddWithValue("@OperatingSystem", pc.OperatingSystem ?? (object)DBNull.Value);
-            cmd.Parameters.AddWithValue("@DeviceId", device.Id);
-            await cmd.ExecuteNonQueryAsync();
+            using var connection = new SqlConnection(_connectionString);
+            await connection.OpenAsync();
+
+            var transaction = connection.BeginTransaction();
+
+            try
+            {
+                var command = new SqlCommand(@"
+                    UPDATE Device 
+                    SET Name = @Name, IsEnabled = @IsEnabled 
+                    WHERE Id = @Id AND RowVersion = @RowVersion", connection, transaction);
+
+                command.Parameters.AddWithValue("@Id", device.Id);
+                command.Parameters.AddWithValue("@Name", device.Name);
+                command.Parameters.AddWithValue("@IsEnabled", device.IsEnabled);
+                command.Parameters.AddWithValue("@RowVersion", device.RowVersion);
+
+                int affectedRows = await command.ExecuteNonQueryAsync();
+                if (affectedRows == 0)
+                    throw new DBConcurrencyException("Device was modified by another user.");
+                
+                if (device is PersonalComputer pc)
+                {
+                    var cmd = new SqlCommand(@"
+                        UPDATE PersonalComputer 
+                        SET OperationSystem = @OperatingSystem 
+                        WHERE DeviceId = @DeviceId", connection, transaction);
+                    cmd.Parameters.AddWithValue("@OperatingSystem", pc.OperatingSystem ?? (object) DBNull.Value);
+                    cmd.Parameters.AddWithValue("@DeviceId", device.Id);
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                else if (device is Smartwatch sw)
+                {
+                    var cmd = new SqlCommand(@"
+                        UPDATE Smartwatch 
+                        SET BatteryPercentage = @Battery 
+                        WHERE DeviceId = @DeviceId", connection, transaction);
+                    cmd.Parameters.AddWithValue("@Battery", sw.BatteryLevel);
+                    cmd.Parameters.AddWithValue("@DeviceId", device.Id);
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                else if (device is Embedded emb)
+                {
+                    var cmd = new SqlCommand(@"
+                        UPDATE Embedded 
+                        SET IpAddress = @Ip, NetworkName = @Network 
+                        WHERE DeviceId = @DeviceId", connection, transaction);
+                    cmd.Parameters.AddWithValue("@Ip", emb.IpAddress);
+                    cmd.Parameters.AddWithValue("@Network", emb.NetworkName);
+                    cmd.Parameters.AddWithValue("@DeviceId", device.Id);
+                    await cmd.ExecuteNonQueryAsync();
+                }
+
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
         }
-        else if (device is Smartwatch sw)
+        
+        private async Task AddEmbeddedDeviceAsync(SqlConnection connection, SqlTransaction transaction,
+            Embedded embedded)
         {
-            var cmd = new SqlCommand("UPDATE Smartwatch SET BatteryPercentage = @Battery WHERE DeviceId = @DeviceId", connection, transaction);
-            cmd.Parameters.AddWithValue("@Battery", sw.BatteryLevel);
-            cmd.Parameters.AddWithValue("@DeviceId", device.Id);
-            await cmd.ExecuteNonQueryAsync();
+            using var command = new SqlCommand("AddEmbedded", connection, transaction)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            command.Parameters.AddWithValue("@DeviceId", embedded.Id);
+            command.Parameters.AddWithValue("@Name", embedded.Name);
+            command.Parameters.AddWithValue("@IsEnabled", embedded.IsEnabled);
+            command.Parameters.AddWithValue("@IpAddress", embedded.IpAddress);
+            command.Parameters.AddWithValue("@NetworkName", embedded.NetworkName);
+
+            await command.ExecuteNonQueryAsync();
         }
-        else if (device is Embedded emb)
+        
+        private async Task AddSmartwatchAsync(SqlConnection connection, SqlTransaction transaction,
+            Smartwatch smartwatch)
         {
-            var cmd = new SqlCommand("UPDATE Embedded SET IpAddress = @Ip, NetworkName = @Network WHERE DeviceId = @DeviceId", connection, transaction);
-            cmd.Parameters.AddWithValue("@Ip", emb.IpAddress);
-            cmd.Parameters.AddWithValue("@Network", emb.NetworkName);
-            cmd.Parameters.AddWithValue("@DeviceId", device.Id);
-            await cmd.ExecuteNonQueryAsync();
+            using var command = new SqlCommand("AddSmartwatch", connection, transaction)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            command.Parameters.AddWithValue("@DeviceId", smartwatch.Id);
+            command.Parameters.AddWithValue("@Name", smartwatch.Name);
+            command.Parameters.AddWithValue("@IsEnabled", smartwatch.IsEnabled);
+            command.Parameters.AddWithValue("@BatteryPercentage", smartwatch.BatteryLevel);
+
+            await command.ExecuteNonQueryAsync();
         }
 
-        await transaction.CommitAsync();
+        private async Task AddPersonalComputerAsync(SqlConnection connection, SqlTransaction transaction,
+            PersonalComputer pc)
+        {
+            using var command = new SqlCommand("AddPersonalComputer", connection, transaction)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+
+            command.Parameters.AddWithValue("@DeviceId", pc.Id);
+            command.Parameters.AddWithValue("@Name", pc.Name);
+            command.Parameters.AddWithValue("@IsEnabled", pc.IsEnabled);
+            command.Parameters.AddWithValue("@OperationSystem", pc.OperatingSystem ?? (object)DBNull.Value);
+
+            await command.ExecuteNonQueryAsync();
+        }
+        
     }
-    catch
-    {
-        await transaction.RollbackAsync();
-        throw;
-    }
-}
-    }
+    
 }

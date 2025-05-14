@@ -7,6 +7,8 @@ public abstract class Device
     public string Name { get; set; }
     public bool IsEnabled { get; set; }
     
+    public byte[] RowVersion { get; set; }
+    
     public Device(string id, string name, bool isEnabled)
     {
         Id = id;
