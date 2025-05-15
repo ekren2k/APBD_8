@@ -6,5 +6,5 @@ public interface IDeviceRepository
     Task<List<Device>> GetDevicesAsync();
     Task<Device?> GetDeviceByIdAsync(string id);
     Task RemoveDeviceByIdAsync(string id);
-    Task EditDeviceAsync(Device device);
+    Task<Device?> EditDeviceAsync(Device device);
 }

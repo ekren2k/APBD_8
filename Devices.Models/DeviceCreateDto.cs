@@ -6,6 +6,7 @@ public record DeviceCreateDto(
     [Required] string Id,
     [Required] string? DeviceType,  //can be null for updates
     [Required, StringLength(100)] string Name,
+    byte[] RowVersion,
     bool IsEnabled,
     string? OperatingSystem,    // PC-only
     int? BatteryLevel,  // Smartwatch-only

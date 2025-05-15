@@ -23,8 +23,8 @@ namespace Devices.Infrastructure
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
             _logger.LogDebug("Adding new device");
-    
-            using var transaction = (SqlTransaction) await connection.BeginTransactionAsync();
+
+            using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
             try
             {
                 if (device is Embedded embedded)
@@ -43,9 +43,9 @@ namespace Devices.Infrastructure
                 {
                     throw new ArgumentException("Invalid device type");
                 }
-                
+
                 var getVersionCmd = new SqlCommand(
-                    "SELECT RowVersion FROM Device WHERE Id = @Id", 
+                    "SELECT RowVersion FROM Device WHERE Id = @Id",
                     connection, transaction);
                 getVersionCmd.Parameters.AddWithValue("@Id", device.Id);
                 device.RowVersion = (byte[])await getVersionCmd.ExecuteScalarAsync();
@@ -66,7 +66,7 @@ namespace Devices.Infrastructure
             await connection.OpenAsync();
 
             var command = new SqlCommand(@"
-                SELECT d.Id, d.Name, d.IsEnabled, pc.OperationSystem, sw.BatteryPercentage, 
+                SELECT d.Id, d.Name, d.IsEnabled, d.RowVersion, pc.OperationSystem, sw.BatteryPercentage, 
                        e.IpAddress, e.NetworkName
                 FROM Device d
                 LEFT JOIN PersonalComputer pc ON d.Id = pc.DeviceId
@@ -127,7 +127,7 @@ namespace Devices.Infrastructure
             await connection.OpenAsync();
 
             var command = new SqlCommand(@"
-        SELECT d.Id, d.Name, d.IsEnabled, pc.OperationSystem, sw.BatteryPercentage, 
+        SELECT d.Id, d.Name, d.IsEnabled, d.RowVersion, pc.OperationSystem, sw.BatteryPercentage, 
                e.IpAddress, e.NetworkName
         FROM Device d
         LEFT JOIN PersonalComputer pc ON d.Id = pc.DeviceId
@@ -142,30 +142,40 @@ namespace Devices.Infrastructure
 
             string name = reader.GetString(reader.GetOrdinal("Name"));
             bool isEnabled = reader.GetBoolean(reader.GetOrdinal("IsEnabled"));
+            byte[] rowVersion = (byte[])reader.GetValue("RowVersion");
+
+            Device? device = null;
 
             if (!reader.IsDBNull(reader.GetOrdinal("OperationSystem")))
             {
-                return new PersonalComputer(id, name, isEnabled,
-                    reader.GetString(reader.GetOrdinal("OperationSystem")));
+                device = new PersonalComputer(
+                    id, name, isEnabled,
+                    reader.GetString(reader.GetOrdinal("OperationSystem"))
+                );
             }
-
-            if (!reader.IsDBNull(reader.GetOrdinal("BatteryPercentage")))
+            else if (!reader.IsDBNull(reader.GetOrdinal("BatteryPercentage")))
             {
-                return new Smartwatch(id, name, isEnabled,
-                    reader.GetInt32(reader.GetOrdinal("BatteryPercentage")));
+                device = new Smartwatch(
+                    id, name, isEnabled,
+                    reader.GetInt32(reader.GetOrdinal("BatteryPercentage"))
+                );
             }
-
-            if (!reader.IsDBNull(reader.GetOrdinal("IpAddress")))
+            else if (!reader.IsDBNull(reader.GetOrdinal("IpAddress")))
             {
-                return new Embedded(id, name, isEnabled,
+                device = new Embedded(
+                    id, name, isEnabled,
                     reader.GetString(reader.GetOrdinal("IpAddress")),
-                    reader.GetString(reader.GetOrdinal("NetworkName")));
+                    reader.GetString(reader.GetOrdinal("NetworkName"))
+                );
             }
-
-            return null;
+            
+            if (device != null)
+                device.RowVersion = rowVersion;
+            
+            return device;
         }
 
-        public async Task RemoveDeviceByIdAsync(string id)
+    public async Task RemoveDeviceByIdAsync(string id)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -190,7 +200,7 @@ namespace Devices.Infrastructure
             transaction.Commit();
         }
 
-        public async Task EditDeviceAsync(Device device)
+        public async Task<Device> EditDeviceAsync(Device device)
         {
             using var connection = new SqlConnection(_connectionString);
             await connection.OpenAsync();
@@ -246,13 +256,15 @@ namespace Devices.Infrastructure
                     await cmd.ExecuteNonQueryAsync();
                 }
 
-                await transaction.CommitAsync();
-                
                 var getVersionCmd = new SqlCommand(
                     "SELECT RowVersion FROM Device WHERE Id = @Id", 
-                    connection);
+                    connection, transaction);
                 getVersionCmd.Parameters.AddWithValue("@Id", device.Id);
                 device.RowVersion = (byte[])await getVersionCmd.ExecuteScalarAsync();
+                await transaction.CommitAsync();
+
+
+                return device;
             }
             catch
             {

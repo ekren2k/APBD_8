@@ -1,3 +1,4 @@
+using System.Data;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Devices.Models;
@@ -67,9 +68,42 @@ public class DeviceService : IDeviceService
 
     public async Task<Device> EditDeviceAsync(DeviceCreateDto dto)
     {
-        var device = await AddDeviceAsync(dto);
-        await _deviceRepository.EditDeviceAsync(device);
-        return device;
+        if (dto.RowVersion is null || dto.RowVersion.Length == 0)
+            throw new ArgumentException("Invalid RowVersion in request");
+        var existingDevice = await _deviceRepository.GetDeviceByIdAsync(dto.Id);
+        if (existingDevice == null) throw new ArgumentException($"Device with id: {dto.Id} was not found");
+
+        if (!existingDevice.RowVersion.SequenceEqual(dto.RowVersion))
+        {
+            throw new DBConcurrencyException("Device was modified by another user");
+        }
+        
+        existingDevice.Name = dto.Name;
+        existingDevice.IsEnabled = dto.IsEnabled;
+
+        switch (existingDevice)
+        {
+            case PersonalComputer pc:
+                pc.OperatingSystem = dto.OperatingSystem;
+                break;
+
+            case Smartwatch sw:
+                sw.BatteryLevel = dto.BatteryLevel
+                                  ?? 0;
+                break;
+
+            case Embedded emb:
+                emb.IpAddress = dto.IpAddress?.Trim()
+                                ?? throw new ArgumentException("IP address required");
+                emb.NetworkName = dto.NetworkName?.Trim()
+                                  ?? throw new ArgumentException("Network name required");
+                break;
+
+            default: throw new NotSupportedException($"Unsupported type: {existingDevice.GetType()}");
+        }
+
+        var updatedDevice = await _deviceRepository.EditDeviceAsync(existingDevice);
+        return updatedDevice;
     }
 
     public async Task<List<Device>> GetDevicesAsync()

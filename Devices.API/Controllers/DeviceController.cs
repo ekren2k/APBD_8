@@ -65,10 +65,14 @@ namespace Devices.Api.Controllers
             if (!ModelState.IsValid)
                 return BadRequest(ModelState);
             
-            var device = await _deviceService.EditDeviceAsync(dto);
-            if (id != device.Id)
-                return BadRequest();
-            return Ok();
+            var updatedDevice = await _deviceService.EditDeviceAsync(dto);
+            return Ok(new
+            {
+                updatedDevice.Id,
+                updatedDevice.Name,
+                newRowVersion = Convert.ToBase64String(updatedDevice.RowVersion),
+                
+            });
         }
 
         [HttpDelete("{id}")]
