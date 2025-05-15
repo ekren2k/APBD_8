@@ -1,0 +1,7 @@
+
+DROP TABLE IF EXISTS [Embedded];
+DROP TABLE IF EXISTS [PersonalComputer];
+DROP TABLE IF EXISTS [Smartwatch];
+
+
+DROP TABLE IF EXISTS [Device];
